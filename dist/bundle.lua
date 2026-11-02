@@ -2,18 +2,27 @@ local __DARKLUA_BUNDLE_MODULES={cache={}::any}do do local function __modImpl()lo
 Engine.Holding = {}
 Engine.Processed = setmetatable({}, { __mode = "k" })
 
+-- Carga segura de los enumeradores del juego
 local NoteResult = { Okay = 1, Great = 2, Perfect = 3, Miss = 4 }
 pcall(function()
     NoteResult = require(game.ReplicatedStorage:WaitForChild("LiteriaRGameCore", 1).Enums.NoteResult)
 end)
+if not NoteResult or not NoteResult.Perfect then
+    pcall(function()
+        NoteResult = require(game.ReplicatedStorage:WaitForChild("RobeatsGameCore", 1).Enums.NoteResult)
+    end)
+end
+if not NoteResult or not NoteResult.Perfect then
+    NoteResult = { Okay = 1, Great = 2, Perfect = 3, Miss = 4 }
+end
 
 function Engine.releaseAll(trackSys)
     if trackSys then
-        for tIdx, _ in pairs(Engine.Holding) do
+        for tIdx = 1, 4 do
             pcall(function() trackSys:release_track_index(tIdx) end)
         end
     end
-    Engine.Holding = {}
+    table.clear(Engine.Holding)
 end
 
 function Engine.isAlive(ts)
@@ -62,20 +71,28 @@ function Engine.step(trackSys, audioMgr)
 
     if isFinished or not isPlaying then return isFinished end
 
-    -- Liberación de notas sostenidas activas
+    -- 1. Control de soltado exacto en notas sostenidas activas
     for tIdx, heldNote in pairs(Engine.Holding) do
-        local mustRelease = false
+        local shouldRelease = false
         pcall(function()
-            if not heldNote or heldNote:should_remove() or heldNote:test_release() then
-                mustRelease = true
+            if not heldNote or heldNote:should_remove() then
+                shouldRelease = true
+            else
+                local canRelease, relRating = heldNote:test_release()
+                -- Soltar únicamente cuando la cola esté en ventana Perfect o Great
+                if canRelease and (relRating == NoteResult.Perfect or relRating == 3 or relRating == NoteResult.Great or relRating == 2) then
+                    shouldRelease = true
+                end
             end
         end)
-        if mustRelease then
+
+        if shouldRelease then
             pcall(function() trackSys:release_track_index(tIdx) end)
             Engine.Holding[tIdx] = nil
         end
     end
 
+    -- 2. Procesamiento de notas en pista
     local notesList
     pcall(function() notesList = trackSys:get_notes() end)
     if not notesList then return false end
@@ -91,24 +108,34 @@ function Engine.step(trackSys, audioMgr)
         if note and not note:should_remove() and not Engine.Processed[note] then
             local tIdx = note:get_track_index()
 
+            -- NOTA SIMPLE (SingleNote)
             if note.ClassName == "SingleNote" then
-                local canHit = note:test_hit()
-                local timeToEnd = 999
-                pcall(function() timeToEnd = note:get_time_to_end() end)
+                local canHit, rating = note:test_hit()
 
-                if canHit and timeToEnd <= 0 then
+                -- Se impacta en cuanto el motor nativo confirme Perfect (o Great si hubo un pico de lag)
+                if canHit and (rating == NoteResult.Perfect or rating == 3 or rating == NoteResult.Great or rating == 2) then
                     Engine.Processed[note] = true
+                    
+                    -- Asegurar que el receptor no esté bloqueado antes de registrar el impacto
+                    pcall(function() trackSys:release_track_index(tIdx) end)
                     trackSys:press_track_index(tIdx)
+                    
                     task.defer(function()
-                        pcall(function() trackSys:release_track_index(tIdx) end)
+                        if not Engine.Holding[tIdx] then
+                            pcall(function() trackSys:release_track_index(tIdx) end)
+                        end
                     end)
                 end
+
+            -- NOTA SOSTENIDA (HeldNote)
             elseif note.ClassName == "HeldNote" then
                 if not Engine.Holding[tIdx] then
-                    local canHit = note:test_hit()
-                    if canHit then
+                    local canHit, rating = note:test_hit()
+                    if canHit and (rating == NoteResult.Perfect or rating == 3 or rating == NoteResult.Great or rating == 2) then
                         Engine.Processed[note] = true
                         Engine.Holding[tIdx] = note
+                        
+                        pcall(function() trackSys:release_track_index(tIdx) end)
                         trackSys:press_track_index(tIdx)
                     end
                 end
