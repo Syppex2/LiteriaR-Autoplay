@@ -3,14 +3,13 @@ Engine.Holding = {}
 Engine.Processed = setmetatable({}, { __mode = "k" })
 Engine.NotePlan = setmetatable({}, { __mode = "k" })
 
--- Calibración de precisión con Full Combo garantizado:
--- 99 = ~99% Perfect, 1% Great (FC asegurado)
--- 98 = ~98% Perfect, 2% Great (FC asegurado)
+-- Calibración de Full Combo:
+-- 99 = 99% Perfect, 1% Late Great (FC garantizado)
+-- 98 = 98% Perfect, 2% Late Great (FC garantizado)
 Engine.Config = {
     PerfectChance = 99,
 }
 
--- Enumerador oficial de LiteriaR / RoBeats: Okay = 1, Great = 2, Perfect = 3, Miss = 4
 local NoteResult = { Okay = 1, Great = 2, Perfect = 3, Miss = 4 }
 pcall(function()
     local core = game.ReplicatedStorage:FindFirstChild("LiteriaRGameCore") or game.ReplicatedStorage:FindFirstChild("RobeatsGameCore")
@@ -86,7 +85,7 @@ function Engine.step(trackSys, audioMgr)
 
     if isFinished or not isPlaying then return isFinished end
 
-    -- 1. SOLTADO DE NOTAS SOSTENIDAS (Solo en Perfect / Great)
+    -- 1. SOLTADO DE NOTAS SOSTENIDAS (En el receptor)
     for tIdx, heldNote in pairs(Engine.Holding) do
         local shouldRelease = false
         pcall(function()
@@ -122,12 +121,21 @@ function Engine.step(trackSys, audioMgr)
         if note and not note:should_remove() and not Engine.Processed[note] then
             local tIdx = note:get_track_index()
 
-            -- Distribución por nota según la probabilidad configurada
             local target = Engine.NotePlan[note]
             if not target then
                 target = (math.random(1, 100) <= Engine.Config.PerfectChance) and "Perfect" or "Great"
                 Engine.NotePlan[note] = target
             end
+
+            -- Obtener la distancia exacta en milisegundos a la barra
+            local timeToEnd = nil
+            pcall(function()
+                if note.get_time_to_end then
+                    timeToEnd = note:get_time_to_end()
+                elseif note.get_time and audioMgr.get_current_time_ms then
+                    timeToEnd = note:get_time() - audioMgr:get_current_time_ms()
+                end
+            end)
 
             -- ====================================================
             -- NOTA SIMPLE (SingleNote)
@@ -138,20 +146,16 @@ function Engine.step(trackSys, audioMgr)
 
                 if canHit then
                     if target == "Perfect" then
-                        -- Espera OBLIGATORIAMENTE a que el juego certifique PERFECT
-                        if isPerfect(rating) then
+                        -- Solo presiona cuando la nota toca físicamente la barra (timeToEnd <= 0)
+                        if isPerfect(rating) and (timeToEnd == nil or timeToEnd <= 0) then
                             shouldHit = true
-                        -- Salvavidas de combo ante caídas de FPS (solo si ya pasó el centro)
-                        elseif isGreat(rating) then
-                            local timeToEnd = 999
-                            pcall(function() timeToEnd = note:get_time_to_end() end)
-                            if timeToEnd < -25 then
-                                shouldHit = true
-                            end
+                        -- Salvavidas de FC ante caídas de FPS
+                        elseif timeToEnd ~= nil and timeToEnd <= -26 and (isPerfect(rating) or isGreat(rating)) then
+                            shouldHit = true
                         end
                     elseif target == "Great" then
-                        -- Disparo intencional en Great para dar el 1% o 2% legítimo
-                        if isGreat(rating) or isPerfect(rating) then
+                        -- Late Great: se deja pasar ligeramente la barra (-35 ms) para no registrarlo arriba
+                        if timeToEnd ~= nil and timeToEnd <= -35 and (isGreat(rating) or isPerfect(rating)) then
                             shouldHit = true
                         end
                     end
@@ -180,13 +184,13 @@ function Engine.step(trackSys, audioMgr)
 
                     if canHit then
                         if target == "Perfect" then
-                            if isPerfect(rating) then
+                            if isPerfect(rating) and (timeToEnd == nil or timeToEnd <= 0) then
                                 shouldPress = true
-                            elseif isGreat(rating) then
+                            elseif timeToEnd ~= nil and timeToEnd <= -26 and (isPerfect(rating) or isGreat(rating)) then
                                 shouldPress = true
                             end
                         elseif target == "Great" then
-                            if isGreat(rating) or isPerfect(rating) then
+                            if timeToEnd ~= nil and timeToEnd <= -35 and (isGreat(rating) or isPerfect(rating)) then
                                 shouldPress = true
                             end
                         end
