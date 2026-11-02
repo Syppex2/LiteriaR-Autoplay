@@ -1,66 +1,26 @@
-local RunService = game:GetService("RunService")
-local Engine = require("./core/engine")
-local Window = require("./ui/window")
+-- src/main.lua
 
-local Autoplay = {
-    Enabled = false,
-    TrackSystem = nil,
-    AudioManager = nil,
-    Connection = nil,
-    UI = nil,
-}
+local Core = require(script.Core)
+local UI = require(script.UI)
 
-local function stopPlayback()
-    if Autoplay.Connection then
-        Autoplay.Connection:Disconnect()
-        Autoplay.Connection = nil
-    end
-    Engine.releaseAll(Autoplay.TrackSystem)
-    Autoplay.TrackSystem = nil
-    Autoplay.AudioManager = nil
-end
+local function main()
+    local trackSystem, audioManager = Core.TrackSystem, Core.AudioManager
+    local uiWindow = UI.create_window()
 
-local function onRenderStep()
-    if not Autoplay.Enabled then
-        stopPlayback()
-        return
-    end
-
-    if not Engine.isAlive(Autoplay.TrackSystem) or not Autoplay.AudioManager then
-        stopPlayback()
-        return
-    end
-
-    local finished = Engine.step(Autoplay.TrackSystem, Autoplay.AudioManager)
-    if finished then
-        stopPlayback()
-        return
-    end
-
-    -- Actualizar panel de Accuracy en tiempo real
-    if Autoplay.UI and Autoplay.UI.StatsLabel then
-        local acc = Engine.getAccuracy()
-        Autoplay.UI.StatsLabel.Text = string.format("ACC: %.2f%% | P:%d G:%d", acc, Engine.Stats.Perfects, Engine.Stats.Greats)
-    end
-end
-
-task.spawn(function()
+    -- Main gameplay loop
     while true do
-        task.wait(0.4)
-        if Autoplay.Enabled and not Autoplay.Connection then
-            local ts, am = Engine.findGame()
-            if ts and am then
-                Autoplay.TrackSystem = ts
-                Autoplay.AudioManager = am
-                Autoplay.Connection = RunService.RenderStepped:Connect(onRenderStep)
+        if audioManager.is_playing() then
+            local notes = trackSystem.get_notes()
+            for _, note in ipairs(notes) do
+                -- Implement note handling logic here
+                print("Handling note: " .. tostring(note))
             end
+        else
+            -- Handle audio finished state
+            print("Audio has finished")
         end
+        wait(1) -- Adjust interval as needed
     end
-end)
+end
 
-Autoplay.UI = Window.create(function(enabled)
-    Autoplay.Enabled = enabled
-    if not enabled then
-        stopPlayback()
-    end
-end)
+main()
