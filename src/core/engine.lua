@@ -4,25 +4,20 @@ Engine.Processed = setmetatable({}, { __mode = "k" })
 Engine.NotePlan = setmetatable({}, { __mode = "k" })
 
 -- AJUSTE DE PRECISIÓN FC:
--- 98 = ~98% de precisión con FC asegurado (2% de Greats)
--- 99 = ~99% de precisión con FC asegurado (1% de Greats)
+-- 99 = 99% Perfect, 1% Great (FC garantizado)
+-- 98 = 98% Perfect, 2% Great (FC garantizado)
 Engine.Config = {
-    PerfectChance = 98,
+    PerfectChance = 99,
 }
 
--- Enumerador oficial
-local NoteResult = { Miss = 1, Okay = 2, Great = 3, Perfect = 4 }
+-- Enumerador oficial nativo de RoBeats / LiteriaR
+local NoteResult = { Okay = 1, Great = 2, Perfect = 3, Miss = 4 }
 pcall(function()
-    NoteResult = require(game.ReplicatedStorage:WaitForChild("LiteriaRGameCore", 1).Enums.NoteResult)
+    local core = game.ReplicatedStorage:FindFirstChild("LiteriaRGameCore") or game.ReplicatedStorage:FindFirstChild("RobeatsGameCore")
+    if core and core:FindFirstChild("Enums") and core.Enums:FindFirstChild("NoteResult") then
+        NoteResult = require(core.Enums.NoteResult)
+    end
 end)
-if not NoteResult or not NoteResult.Perfect then
-    pcall(function()
-        NoteResult = require(game.ReplicatedStorage:WaitForChild("RobeatsGameCore", 1).Enums.NoteResult)
-    end)
-end
-if not NoteResult or not NoteResult.Perfect then
-    NoteResult = { Miss = 1, Okay = 2, Great = 3, Perfect = 4 }
-end
 
 function Engine.releaseAll(trackSys)
     if trackSys then
@@ -80,7 +75,7 @@ function Engine.step(trackSys, audioMgr)
 
     if isFinished or not isPlaying then return isFinished end
 
-    -- 1. SOLTADO DE NOTAS SOSTENIDAS (Garantía de Combo)
+    -- 1. CONTROL DE SOLTADO DE NOTAS SOSTENIDAS
     for tIdx, heldNote in pairs(Engine.Holding) do
         local shouldRelease = false
         pcall(function()
@@ -88,7 +83,8 @@ function Engine.step(trackSys, audioMgr)
                 shouldRelease = true
             else
                 local canRelease, relRating = heldNote:test_release()
-                if canRelease and (relRating == NoteResult.Perfect or relRating == 4 or relRating == NoteResult.Great or relRating == 3) then
+                -- En RoBeats: Perfect = 3, Great = 2
+                if canRelease and (relRating == NoteResult.Perfect or relRating == 3 or relRating == NoteResult.Great or relRating == 2) then
                     shouldRelease = true
                 end
             end
@@ -116,7 +112,7 @@ function Engine.step(trackSys, audioMgr)
         if note and not note:should_remove() and not Engine.Processed[note] then
             local tIdx = note:get_track_index()
 
-            -- Asignación de veredicto por nota (98% Perfect / 2% Great)
+            -- Asignación de veredicto por nota (según PerfectChance)
             local target = Engine.NotePlan[note]
             if not target then
                 target = (math.random(1, 100) <= Engine.Config.PerfectChance) and "Perfect" or "Great"
@@ -127,27 +123,26 @@ function Engine.step(trackSys, audioMgr)
             -- NOTA SIMPLE (SingleNote)
             -- ====================================================
             if note.ClassName == "SingleNote" then
-                local canHit, rating = note:test_hit()
+                local canHit = note:test_hit()
                 local timeToEnd = 999
                 pcall(function() timeToEnd = note:get_time_to_end() end)
 
                 local shouldHit = false
 
-                if target == "Perfect" then
-                    -- Impacto directo en ventana Perfect
-                    if canHit and (rating == NoteResult.Perfect or rating == 4) then
-                        shouldHit = true
-                    -- Salvavidas de combo: si hubo lag, golpear antes de que salga de la barra
-                    elseif canHit and timeToEnd <= -28 then
-                        shouldHit = true
-                    end
-                elseif target == "Great" then
-                    -- Impacto retrasado voluntario (~34 ms tarde) para forzar un Great limpio
-                    if canHit and timeToEnd <= -34 and (rating == NoteResult.Great or rating == 3) then
-                        shouldHit = true
-                    -- Salvavidas: no permitir que caiga en Okay o Miss
-                    elseif canHit and timeToEnd <= -48 then
-                        shouldHit = true
+                if canHit then
+                    if target == "Perfect" then
+                        -- Calibración matemática de Perfect: entre +4 ms y -25 ms de la barra
+                        if timeToEnd <= 4 and timeToEnd >= -25 then
+                            shouldHit = true
+                        -- Salvavidas de combo ante caídas de FPS (nunca dejar pasar)
+                        elseif timeToEnd < -25 then
+                            shouldHit = true
+                        end
+                    elseif target == "Great" then
+                        -- Retraso deliberado a -38 ms para registrar un Late Great legítimo
+                        if timeToEnd <= -38 then
+                            shouldHit = true
+                        end
                     end
                 end
 
@@ -172,14 +167,15 @@ function Engine.step(trackSys, audioMgr)
                     local canHit, rating = note:test_hit()
                     local shouldPress = false
 
-                    if target == "Perfect" then
-                        if canHit and (rating == NoteResult.Perfect or rating == 4) then
-                            shouldPress = true
-                        end
-                    elseif target == "Great" then
-                        -- En notas largas se toma el Great temprano de entrada o Perfect si no hay margen
-                        if canHit and (rating == NoteResult.Great or rating == 3 or rating == NoteResult.Perfect or rating == 4) then
-                            shouldPress = true
+                    if canHit then
+                        if target == "Perfect" then
+                            if rating == NoteResult.Perfect or rating == 3 then
+                                shouldPress = true
+                            end
+                        elseif target == "Great" then
+                            if rating == NoteResult.Great or rating == 2 or rating == NoteResult.Perfect or rating == 3 then
+                                shouldPress = true
+                            end
                         end
                     end
 
