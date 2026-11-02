@@ -4,15 +4,15 @@ Engine.Processed = setmetatable({}, { __mode = "k" })
 Engine.NotePlan = setmetatable({}, { __mode = "k" })
 
 -- ====================================================================
--- REGULADOR DE PRECISIÓN DINÁMICA (99.X% FC BLINDADO)
+-- REGULADOR DINÁMICO 99.#% CON BLINDAJE DE HELD NOTES
 -- ====================================================================
 Engine.Config = {
-    MaxAccuracy = 99.65,       -- Si supera este porcentaje, programa un Great para bajarlo
-    MinAccuracy = 99.15,       -- Si cae por debajo, prohíbe Greats hasta recuperar
-    InitialGreatNote = 25,     -- Nota en la que fuerza el primer Great para entrar a 99.X%
-    GreatCooldownSec = 3.5,    -- Segundos mínimos de separación entre Greats
-    PerfectJitterMin = -8,     -- Jitter: ms tarde dentro de Perfect
-    PerfectJitterMax = 5,      -- Jitter: ms temprano dentro de Perfect
+    MaxAccuracy = 99.65,       -- Si el acc sube de aquí, fuerza un Great en nota simple
+    MinAccuracy = 99.15,       -- Si cae de aquí, solo permite Perfects para recuperar
+    InitialGreatNote = 25,     -- Nota en la que mete el primer Great para romper el 100%
+    GreatCooldownSec = 3.5,    -- Segundos mínimos de distancia entre Greats
+    PerfectJitterMin = -8,     -- Jitter: ms tarde en Perfect
+    PerfectJitterMax = 5,      -- Jitter: ms temprano en Perfect
 }
 
 Engine.Stats = {
@@ -40,6 +40,20 @@ end
 
 local function isGreat(rating)
     return rating == NoteResult.Great or rating == 2
+end
+
+local function getNoteDuration(note)
+    local dur = 0
+    pcall(function()
+        if note.get_duration then
+            dur = note:get_duration()
+        elseif note.get_hold_duration then
+            dur = note:get_hold_duration()
+        elseif note._duration then
+            dur = note._duration
+        end
+    end)
+    return dur or 0
 end
 
 function Engine.getAccuracy()
@@ -108,17 +122,39 @@ function Engine.step(trackSys, audioMgr)
 
     if isFinished or not isPlaying then return isFinished end
 
-    -- 1. NOTAS SOSTENIDAS: Soltado estricto en ventana alta
+    local curTime = 0
+    local okTime = pcall(function() curTime = audioMgr:get_current_time_ms() end)
+    if not okTime or not curTime then return false end
+
+    -- ====================================================================
+    -- 1. SOLTADO DE NOTAS SOSTENIDAS (Calibrado en la cola exacta)
+    -- ====================================================================
     for tIdx, heldNote in pairs(Engine.Holding) do
         local shouldRelease = false
+        local dur = getNoteDuration(heldNote)
+        local headTime = 0
+        pcall(function() headTime = heldNote:get_time() end)
+        local tailTime = headTime + dur
+        local tailTimeToHit = tailTime - curTime
+
+        local canRelease, relRating = false, 0
+        pcall(function()
+            if heldNote.test_release then
+                canRelease, relRating = heldNote:test_release()
+            end
+        end)
+
         pcall(function()
             if not heldNote or heldNote:should_remove() then
                 shouldRelease = true
-            else
-                local canRelease, relRating = heldNote:test_release()
-                if canRelease and (isPerfect(relRating) or isGreat(relRating)) then
-                    shouldRelease = true
-                end
+            -- Solo suelta cuando la cola toca el receptor (tailTimeToHit <= 0) dentro de ventana Perfect/Great
+            elseif tailTimeToHit <= 0 and (canRelease or isPerfect(relRating) or isGreat(relRating)) then
+                shouldRelease = true
+            -- Salvavidas de lag antes de que salga de la barra
+            elseif tailTimeToHit <= -26 and (canRelease or isPerfect(relRating) or isGreat(relRating)) then
+                shouldRelease = true
+            elseif tailTimeToHit <= -45 then
+                shouldRelease = true
             end
         end)
 
@@ -128,7 +164,9 @@ function Engine.step(trackSys, audioMgr)
         end
     end
 
-    -- 2. EVALUACIÓN Y GOLPEO DE NOTAS
+    -- ====================================================================
+    -- 2. EVALUACIÓN Y GOLPEO DE NOTAS ENTRANTES
+    -- ====================================================================
     local notesList
     pcall(function() notesList = trackSys:get_notes() end)
     if not notesList then return false end
@@ -144,7 +182,12 @@ function Engine.step(trackSys, audioMgr)
         if note and not note:should_remove() and not Engine.Processed[note] then
             local tIdx = note:get_track_index()
 
-            -- REGULADOR DE ACCURACY 99.X%
+            -- Tiempo de la cabeza al receptor (sin usar get_time_to_end en HeldNotes)
+            local noteHeadTime = 0
+            pcall(function() noteHeadTime = note:get_time() end)
+            local headTimeToHit = noteHeadTime - curTime
+
+            -- Plan de impacto (los Greats SOLO se asignan a notas simples)
             local plan = Engine.NotePlan[note]
             if not plan then
                 local currentAcc = Engine.getAccuracy()
@@ -163,7 +206,7 @@ function Engine.step(trackSys, audioMgr)
                 if allowGreat then
                     plan = {
                         Type = "Great",
-                        TargetMs = -35, -- Retardo para Late Great sin riesgo de Okay
+                        TargetMs = -35,
                     }
                     Engine.LastGreatTime = now
                 else
@@ -175,38 +218,24 @@ function Engine.step(trackSys, audioMgr)
                 Engine.NotePlan[note] = plan
             end
 
-            -- Posición de la nota respecto a la barra receptora
-            local timeToEnd = nil
-            pcall(function()
-                if note.get_time_to_end then
-                    timeToEnd = note:get_time_to_end()
-                elseif note.get_time and audioMgr.get_current_time_ms then
-                    timeToEnd = note:get_time() - audioMgr:get_current_time_ms()
-                end
-            end)
-
-            -- ====================================================
+            -- ----------------------------------------------------------------
             -- NOTA SIMPLE (SingleNote)
-            -- ====================================================
+            -- ----------------------------------------------------------------
             if note.ClassName == "SingleNote" then
                 local canHit, rating = note:test_hit()
                 local shouldHit = false
 
                 if canHit then
                     if plan.Type == "Perfect" then
-                        -- Impacta exactamente en la barra con el jitter asignado
-                        if isPerfect(rating) and (timeToEnd == nil or timeToEnd <= plan.TargetMs) then
+                        if isPerfect(rating) and headTimeToHit <= plan.TargetMs then
                             shouldHit = true
-                        -- Blindaje anti-miss si caen los FPS
-                        elseif timeToEnd ~= nil and timeToEnd <= -25 and (isPerfect(rating) or isGreat(rating)) then
+                        elseif headTimeToHit <= -25 and (isPerfect(rating) or isGreat(rating)) then
                             shouldHit = true
                         end
                     elseif plan.Type == "Great" then
-                        -- Espera al retardo controlado sobre el receptor
-                        if timeToEnd ~= nil and timeToEnd <= plan.TargetMs and (isGreat(rating) or isPerfect(rating)) then
+                        if headTimeToHit <= plan.TargetMs and (isGreat(rating) or isPerfect(rating)) then
                             shouldHit = true
-                        -- Salvavidas para evitar Okay o Miss
-                        elseif timeToEnd ~= nil and timeToEnd <= -45 then
+                        elseif headTimeToHit <= -45 then
                             shouldHit = true
                         end
                     end
@@ -232,19 +261,19 @@ function Engine.step(trackSys, audioMgr)
                     end)
                 end
 
-            -- ====================================================
+            -- ----------------------------------------------------------------
             -- NOTA SOSTENIDA (HeldNote)
-            -- ====================================================
+            -- ----------------------------------------------------------------
             elseif note.ClassName == "HeldNote" then
                 if not Engine.Holding[tIdx] then
                     local canHit, rating = note:test_hit()
                     local shouldPress = false
 
                     if canHit then
-                        -- Las notas sostenidas siempre van a Perfect sobre la barra
-                        if isPerfect(rating) and (timeToEnd == nil or timeToEnd <= 0) then
+                        -- La cabeza de la nota sostenida se activa SIEMPRE en Perfect sobre la barra
+                        if isPerfect(rating) and headTimeToHit <= 0 then
                             shouldPress = true
-                        elseif timeToEnd ~= nil and timeToEnd <= -24 and (isPerfect(rating) or isGreat(rating)) then
+                        elseif headTimeToHit <= -24 and (isPerfect(rating) or isGreat(rating)) then
                             shouldPress = true
                         end
                     end
