@@ -3,21 +3,32 @@ Engine.Holding = {}
 Engine.Processed = setmetatable({}, { __mode = "k" })
 Engine.NotePlan = setmetatable({}, { __mode = "k" })
 
--- AJUSTE DE PRECISIÓN FC:
--- 99 = 99% Perfect, 1% Great (FC garantizado)
--- 98 = 98% Perfect, 2% Great (FC garantizado)
+-- Calibración de precisión con Full Combo garantizado:
+-- 99 = ~99% Perfect, 1% Great (FC asegurado)
+-- 98 = ~98% Perfect, 2% Great (FC asegurado)
 Engine.Config = {
     PerfectChance = 99,
 }
 
--- Enumerador oficial nativo de RoBeats / LiteriaR
+-- Enumerador oficial de LiteriaR / RoBeats: Okay = 1, Great = 2, Perfect = 3, Miss = 4
 local NoteResult = { Okay = 1, Great = 2, Perfect = 3, Miss = 4 }
 pcall(function()
     local core = game.ReplicatedStorage:FindFirstChild("LiteriaRGameCore") or game.ReplicatedStorage:FindFirstChild("RobeatsGameCore")
     if core and core:FindFirstChild("Enums") and core.Enums:FindFirstChild("NoteResult") then
-        NoteResult = require(core.Enums.NoteResult)
+        local loaded = require(core.Enums.NoteResult)
+        if type(loaded) == "table" and loaded.Perfect ~= nil then
+            NoteResult = loaded
+        end
     end
 end)
+
+local function isPerfect(rating)
+    return rating == NoteResult.Perfect or rating == 3
+end
+
+local function isGreat(rating)
+    return rating == NoteResult.Great or rating == 2
+end
 
 function Engine.releaseAll(trackSys)
     if trackSys then
@@ -75,7 +86,7 @@ function Engine.step(trackSys, audioMgr)
 
     if isFinished or not isPlaying then return isFinished end
 
-    -- 1. CONTROL DE SOLTADO DE NOTAS SOSTENIDAS
+    -- 1. SOLTADO DE NOTAS SOSTENIDAS (Solo en Perfect / Great)
     for tIdx, heldNote in pairs(Engine.Holding) do
         local shouldRelease = false
         pcall(function()
@@ -83,8 +94,7 @@ function Engine.step(trackSys, audioMgr)
                 shouldRelease = true
             else
                 local canRelease, relRating = heldNote:test_release()
-                -- En RoBeats: Perfect = 3, Great = 2
-                if canRelease and (relRating == NoteResult.Perfect or relRating == 3 or relRating == NoteResult.Great or relRating == 2) then
+                if canRelease and (isPerfect(relRating) or isGreat(relRating)) then
                     shouldRelease = true
                 end
             end
@@ -112,7 +122,7 @@ function Engine.step(trackSys, audioMgr)
         if note and not note:should_remove() and not Engine.Processed[note] then
             local tIdx = note:get_track_index()
 
-            -- Asignación de veredicto por nota (según PerfectChance)
+            -- Distribución por nota según la probabilidad configurada
             local target = Engine.NotePlan[note]
             if not target then
                 target = (math.random(1, 100) <= Engine.Config.PerfectChance) and "Perfect" or "Great"
@@ -123,24 +133,25 @@ function Engine.step(trackSys, audioMgr)
             -- NOTA SIMPLE (SingleNote)
             -- ====================================================
             if note.ClassName == "SingleNote" then
-                local canHit = note:test_hit()
-                local timeToEnd = 999
-                pcall(function() timeToEnd = note:get_time_to_end() end)
-
+                local canHit, rating = note:test_hit()
                 local shouldHit = false
 
                 if canHit then
                     if target == "Perfect" then
-                        -- Calibración matemática de Perfect: entre +4 ms y -25 ms de la barra
-                        if timeToEnd <= 4 and timeToEnd >= -25 then
+                        -- Espera OBLIGATORIAMENTE a que el juego certifique PERFECT
+                        if isPerfect(rating) then
                             shouldHit = true
-                        -- Salvavidas de combo ante caídas de FPS (nunca dejar pasar)
-                        elseif timeToEnd < -25 then
-                            shouldHit = true
+                        -- Salvavidas de combo ante caídas de FPS (solo si ya pasó el centro)
+                        elseif isGreat(rating) then
+                            local timeToEnd = 999
+                            pcall(function() timeToEnd = note:get_time_to_end() end)
+                            if timeToEnd < -25 then
+                                shouldHit = true
+                            end
                         end
                     elseif target == "Great" then
-                        -- Retraso deliberado a -38 ms para registrar un Late Great legítimo
-                        if timeToEnd <= -38 then
+                        -- Disparo intencional en Great para dar el 1% o 2% legítimo
+                        if isGreat(rating) or isPerfect(rating) then
                             shouldHit = true
                         end
                     end
@@ -169,11 +180,13 @@ function Engine.step(trackSys, audioMgr)
 
                     if canHit then
                         if target == "Perfect" then
-                            if rating == NoteResult.Perfect or rating == 3 then
+                            if isPerfect(rating) then
+                                shouldPress = true
+                            elseif isGreat(rating) then
                                 shouldPress = true
                             end
                         elseif target == "Great" then
-                            if rating == NoteResult.Great or rating == 2 or rating == NoteResult.Perfect or rating == 3 then
+                            if isGreat(rating) or isPerfect(rating) then
                                 shouldPress = true
                             end
                         end
