@@ -16,9 +16,9 @@ function Window.create(onToggle)
     screenGui.Parent = parent
 
     local frame = Instance.new("Frame")
-    frame.Size = UDim2.new(0, 180, 0, 85)
-    frame.Position = UDim2.new(0.5, -90, 0.15, 0)
-    frame.BackgroundColor3 = Color3.fromRGB(20, 21, 26)
+    frame.Size = UDim2.new(0, 190, 0, 105)
+    frame.Position = UDim2.new(0.5, -95, 0.12, 0)
+    frame.BackgroundColor3 = Color3.fromRGB(18, 19, 23)
     frame.BorderSizePixel = 0
     frame.Active = true
     frame.Draggable = true
@@ -29,28 +29,28 @@ function Window.create(onToggle)
     corner.Parent = frame
 
     local stroke = Instance.new("UIStroke")
-    stroke.Color = Color3.fromRGB(45, 48, 58)
+    stroke.Color = Color3.fromRGB(40, 44, 52)
     stroke.Thickness = 1.2
     stroke.Parent = frame
 
-    local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(1, 0, 0, 22)
-    label.Position = UDim2.new(0, 0, 0, 4)
-    label.BackgroundTransparency = 1
-    label.Font = Enum.Font.GothamBold
-    label.Text = "AUTOPLAY • [F4]"
-    label.TextColor3 = Color3.fromRGB(200, 205, 215)
-    label.TextSize = 11
-    label.Parent = frame
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, 0, 0, 22)
+    title.Position = UDim2.new(0, 0, 0, 4)
+    title.BackgroundTransparency = 1
+    title.Font = Enum.Font.GothamBold
+    title.Text = "AUTOPLAY • 99% FC [F4]"
+    title.TextColor3 = Color3.fromRGB(190, 195, 205)
+    title.TextSize = 10
+    title.Parent = frame
 
     local toggleBtn = Instance.new("TextButton")
-    toggleBtn.Size = UDim2.new(1, -20, 0, 36)
-    toggleBtn.Position = UDim2.new(0, 10, 0, 34)
-    toggleBtn.BackgroundColor3 = Color3.fromRGB(220, 50, 60)
+    toggleBtn.Size = UDim2.new(1, -20, 0, 32)
+    toggleBtn.Position = UDim2.new(0, 10, 0, 28)
+    toggleBtn.BackgroundColor3 = Color3.fromRGB(215, 45, 55)
     toggleBtn.Font = Enum.Font.GothamBold
     toggleBtn.Text = "OFF"
     toggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    toggleBtn.TextSize = 13
+    toggleBtn.TextSize = 12
     toggleBtn.AutoButtonColor = false
     toggleBtn.Parent = frame
 
@@ -58,16 +58,21 @@ function Window.create(onToggle)
     btnCorner.CornerRadius = UDim.new(0, 6)
     btnCorner.Parent = toggleBtn
 
+    local statsLabel = Instance.new("TextLabel")
+    statsLabel.Size = UDim2.new(1, -20, 0, 34)
+    statsLabel.Position = UDim2.new(0, 10, 0, 64)
+    statsLabel.BackgroundTransparency = 1
+    statsLabel.Font = Enum.Font.Code
+    statsLabel.Text = "ACC: 100.00% | P:0 G:0"
+    statsLabel.TextColor3 = Color3.fromRGB(120, 180, 255)
+    statsLabel.TextSize = 10
+    statsLabel.Parent = frame
+
     local isEnabled = false
     toggleBtn.MouseButton1Click:Connect(function()
         isEnabled = not isEnabled
-        if isEnabled then
-            toggleBtn.Text = "ON"
-            toggleBtn.BackgroundColor3 = Color3.fromRGB(40, 180, 75)
-        else
-            toggleBtn.Text = "OFF"
-            toggleBtn.BackgroundColor3 = Color3.fromRGB(220, 50, 60)
-        end
+        toggleBtn.Text = isEnabled and "ON" or "OFF"
+        toggleBtn.BackgroundColor3 = isEnabled and Color3.fromRGB(35, 175, 70) or Color3.fromRGB(215, 45, 55)
         onToggle(isEnabled)
     end)
 
@@ -78,7 +83,10 @@ function Window.create(onToggle)
         end
     end)
 
-    return screenGui
+    return {
+        Gui = screenGui,
+        StatsLabel = statsLabel
+    }
 end
 
 return Window

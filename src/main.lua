@@ -7,6 +7,7 @@ local Autoplay = {
     TrackSystem = nil,
     AudioManager = nil,
     Connection = nil,
+    UI = nil,
 }
 
 local function stopPlayback()
@@ -15,7 +16,6 @@ local function stopPlayback()
         Autoplay.Connection = nil
     end
     Engine.releaseAll(Autoplay.TrackSystem)
-    table.clear(Engine.Processed)
     Autoplay.TrackSystem = nil
     Autoplay.AudioManager = nil
 end
@@ -34,13 +34,19 @@ local function onRenderStep()
     local finished = Engine.step(Autoplay.TrackSystem, Autoplay.AudioManager)
     if finished then
         stopPlayback()
+        return
+    end
+
+    -- Actualizar panel de Accuracy en tiempo real
+    if Autoplay.UI and Autoplay.UI.StatsLabel then
+        local acc = Engine.getAccuracy()
+        Autoplay.UI.StatsLabel.Text = string.format("ACC: %.2f%% | P:%d G:%d", acc, Engine.Stats.Perfects, Engine.Stats.Greats)
     end
 end
 
--- Supervisor pasivo para enganchar partidas
 task.spawn(function()
     while true do
-        task.wait(0.5)
+        task.wait(0.4)
         if Autoplay.Enabled and not Autoplay.Connection then
             local ts, am = Engine.findGame()
             if ts and am then
@@ -52,7 +58,7 @@ task.spawn(function()
     end
 end)
 
-Window.create(function(enabled)
+Autoplay.UI = Window.create(function(enabled)
     Autoplay.Enabled = enabled
     if not enabled then
         stopPlayback()

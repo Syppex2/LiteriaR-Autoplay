@@ -4,22 +4,15 @@ Engine.Processed = setmetatable({}, { __mode = "k" })
 Engine.NotePlan = setmetatable({}, { __mode = "k" })
 
 -- ====================================================================
--- CONFIGURACIÓN DE ACCURACY Y HUMANIZACIÓN
+-- REGULADOR DE PRECISIÓN DINÁMICA (99.X% FC BLINDADO)
 -- ====================================================================
 Engine.Config = {
-    -- Umbral de precisión: si el accuracy supera este número, se fuerza un Great
-    -- (Ej: 99.5, 99.7 o 99.9 según tu preferencia)
-    TargetAccuracy = 99.6,
-
-    -- Cantidad de notas iniciales en Perfect antes de permitir el primer Great
-    MinNotesBeforeGreat = 30,
-
-    -- Enfriamiento en segundos entre Greats (evita dos Greats seguidos en ráfagas)
-    GreatCooldown = 4.0,
-
-    -- Variación humanizada de milisegundos para notas PERFECT (Jitter natural)
-    PerfectJitterMin = -12, -- ms tarde
-    PerfectJitterMax = 8,   -- ms temprano
+    MaxAccuracy = 99.65,       -- Si supera este porcentaje, programa un Great para bajarlo
+    MinAccuracy = 99.15,       -- Si cae por debajo, prohíbe Greats hasta recuperar
+    InitialGreatNote = 25,     -- Nota en la que fuerza el primer Great para entrar a 99.X%
+    GreatCooldownSec = 3.5,    -- Segundos mínimos de separación entre Greats
+    PerfectJitterMin = -8,     -- Jitter: ms tarde dentro de Perfect
+    PerfectJitterMax = 5,      -- Jitter: ms temprano dentro de Perfect
 }
 
 Engine.Stats = {
@@ -29,7 +22,7 @@ Engine.Stats = {
 }
 Engine.LastGreatTime = 0
 
--- Enumeradores nativos de RoBeats / LiteriaR
+-- Enumeradores oficiales del juego
 local NoteResult = { Okay = 1, Great = 2, Perfect = 3, Miss = 4 }
 pcall(function()
     local core = game.ReplicatedStorage:FindFirstChild("LiteriaRGameCore") or game.ReplicatedStorage:FindFirstChild("RobeatsGameCore")
@@ -115,7 +108,7 @@ function Engine.step(trackSys, audioMgr)
 
     if isFinished or not isPlaying then return isFinished end
 
-    -- 1. SOLTADO DE NOTAS SOSTENIDAS (Siempre en Perfect para asegurar combo)
+    -- 1. NOTAS SOSTENIDAS: Soltado estricto en ventana alta
     for tIdx, heldNote in pairs(Engine.Holding) do
         local shouldRelease = false
         pcall(function()
@@ -135,7 +128,7 @@ function Engine.step(trackSys, audioMgr)
         end
     end
 
-    -- 2. PROCESAMIENTO DE NOTAS
+    -- 2. EVALUACIÓN Y GOLPEO DE NOTAS
     local notesList
     pcall(function() notesList = trackSys:get_notes() end)
     if not notesList then return false end
@@ -151,32 +144,38 @@ function Engine.step(trackSys, audioMgr)
         if note and not note:should_remove() and not Engine.Processed[note] then
             local tIdx = note:get_track_index()
 
-            -- Planificación y calibración de impacto por nota
+            -- REGULADOR DE ACCURACY 99.X%
             local plan = Engine.NotePlan[note]
             if not plan then
                 local currentAcc = Engine.getAccuracy()
-                local canTriggerGreat = (Engine.Stats.Total >= Engine.Config.MinNotesBeforeGreat)
-                    and (currentAcc >= Engine.Config.TargetAccuracy)
-                    and (tick() - Engine.LastGreatTime >= Engine.Config.GreatCooldown)
-                    and (note.ClassName == "SingleNote")
+                local totalNotes = Engine.Stats.Total
+                local now = tick()
 
-                if canTriggerGreat then
+                local mustDropInitial = (totalNotes == Engine.Config.InitialGreatNote)
+                local isAboveCeiling = (totalNotes > Engine.Config.InitialGreatNote)
+                    and (currentAcc >= Engine.Config.MaxAccuracy)
+                    and (now - Engine.LastGreatTime >= Engine.Config.GreatCooldownSec)
+
+                local allowGreat = (note.ClassName == "SingleNote")
+                    and (currentAcc > Engine.Config.MinAccuracy)
+                    and (mustDropInitial or isAboveCeiling)
+
+                if allowGreat then
                     plan = {
                         Type = "Great",
-                        TargetMs = -36, -- Retraso a -36 ms para forzar Late Great limpio
+                        TargetMs = -35, -- Retardo para Late Great sin riesgo de Okay
                     }
-                    Engine.LastGreatTime = tick()
+                    Engine.LastGreatTime = now
                 else
-                    -- Jitter humanizado dentro de la ventana Perfect
-                    local jitter = math.random(Engine.Config.PerfectJitterMin, Engine.Config.PerfectJitterMax)
                     plan = {
                         Type = "Perfect",
-                        TargetMs = jitter,
+                        TargetMs = math.random(Engine.Config.PerfectJitterMin, Engine.Config.PerfectJitterMax),
                     }
                 end
                 Engine.NotePlan[note] = plan
             end
 
+            -- Posición de la nota respecto a la barra receptora
             local timeToEnd = nil
             pcall(function()
                 if note.get_time_to_end then
@@ -195,19 +194,19 @@ function Engine.step(trackSys, audioMgr)
 
                 if canHit then
                     if plan.Type == "Perfect" then
-                        -- Impacta cuando llega al milisegundo humanizado asignado
+                        -- Impacta exactamente en la barra con el jitter asignado
                         if isPerfect(rating) and (timeToEnd == nil or timeToEnd <= plan.TargetMs) then
                             shouldHit = true
-                        -- Salvavidas anti-lag: nunca dejar escapar la nota
-                        elseif timeToEnd ~= nil and timeToEnd <= -26 and (isPerfect(rating) or isGreat(rating)) then
+                        -- Blindaje anti-miss si caen los FPS
+                        elseif timeToEnd ~= nil and timeToEnd <= -25 and (isPerfect(rating) or isGreat(rating)) then
                             shouldHit = true
                         end
                     elseif plan.Type == "Great" then
-                        -- Espera a que cruce ligeramente el receptor para el Great seguro
+                        -- Espera al retardo controlado sobre el receptor
                         if timeToEnd ~= nil and timeToEnd <= plan.TargetMs and (isGreat(rating) or isPerfect(rating)) then
                             shouldHit = true
-                        -- Salvavidas para evitar caer en Okay o Miss
-                        elseif timeToEnd ~= nil and timeToEnd <= -46 then
+                        -- Salvavidas para evitar Okay o Miss
+                        elseif timeToEnd ~= nil and timeToEnd <= -45 then
                             shouldHit = true
                         end
                     end
@@ -242,10 +241,10 @@ function Engine.step(trackSys, audioMgr)
                     local shouldPress = false
 
                     if canHit then
-                        -- Las notas sostenidas se activan en Perfect directo sobre la barra
+                        -- Las notas sostenidas siempre van a Perfect sobre la barra
                         if isPerfect(rating) and (timeToEnd == nil or timeToEnd <= 0) then
                             shouldPress = true
-                        elseif timeToEnd ~= nil and timeToEnd <= -26 and (isPerfect(rating) or isGreat(rating)) then
+                        elseif timeToEnd ~= nil and timeToEnd <= -24 and (isPerfect(rating) or isGreat(rating)) then
                             shouldPress = true
                         end
                     end

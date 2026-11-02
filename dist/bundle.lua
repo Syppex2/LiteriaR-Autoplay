@@ -4,22 +4,15 @@ Engine.Processed = setmetatable({}, { __mode = "k" })
 Engine.NotePlan = setmetatable({}, { __mode = "k" })
 
 -- ====================================================================
--- CONFIGURACIÓN DE ACCURACY Y HUMANIZACIÓN
+-- REGULADOR DE PRECISIÓN DINÁMICA (99.X% FC BLINDADO)
 -- ====================================================================
 Engine.Config = {
-    -- Umbral de precisión: si el accuracy supera este número, se fuerza un Great
-    -- (Ej: 99.5, 99.7 o 99.9 según tu preferencia)
-    TargetAccuracy = 99.6,
-
-    -- Cantidad de notas iniciales en Perfect antes de permitir el primer Great
-    MinNotesBeforeGreat = 30,
-
-    -- Enfriamiento en segundos entre Greats (evita dos Greats seguidos en ráfagas)
-    GreatCooldown = 4.0,
-
-    -- Variación humanizada de milisegundos para notas PERFECT (Jitter natural)
-    PerfectJitterMin = -12, -- ms tarde
-    PerfectJitterMax = 8,   -- ms temprano
+    MaxAccuracy = 99.65,       -- Si supera este porcentaje, programa un Great para bajarlo
+    MinAccuracy = 99.15,       -- Si cae por debajo, prohíbe Greats hasta recuperar
+    InitialGreatNote = 25,     -- Nota en la que fuerza el primer Great para entrar a 99.X%
+    GreatCooldownSec = 3.5,    -- Segundos mínimos de separación entre Greats
+    PerfectJitterMin = -8,     -- Jitter: ms tarde dentro de Perfect
+    PerfectJitterMax = 5,      -- Jitter: ms temprano dentro de Perfect
 }
 
 Engine.Stats = {
@@ -29,7 +22,7 @@ Engine.Stats = {
 }
 Engine.LastGreatTime = 0
 
--- Enumeradores nativos de RoBeats / LiteriaR
+-- Enumeradores oficiales del juego
 local NoteResult = { Okay = 1, Great = 2, Perfect = 3, Miss = 4 }
 pcall(function()
     local core = game.ReplicatedStorage:FindFirstChild("LiteriaRGameCore") or game.ReplicatedStorage:FindFirstChild("RobeatsGameCore")
@@ -115,7 +108,7 @@ function Engine.step(trackSys, audioMgr)
 
     if isFinished or not isPlaying then return isFinished end
 
-    -- 1. SOLTADO DE NOTAS SOSTENIDAS (Siempre en Perfect para asegurar combo)
+    -- 1. NOTAS SOSTENIDAS: Soltado estricto en ventana alta
     for tIdx, heldNote in pairs(Engine.Holding) do
         local shouldRelease = false
         pcall(function()
@@ -135,7 +128,7 @@ function Engine.step(trackSys, audioMgr)
         end
     end
 
-    -- 2. PROCESAMIENTO DE NOTAS
+    -- 2. EVALUACIÓN Y GOLPEO DE NOTAS
     local notesList
     pcall(function() notesList = trackSys:get_notes() end)
     if not notesList then return false end
@@ -151,32 +144,38 @@ function Engine.step(trackSys, audioMgr)
         if note and not note:should_remove() and not Engine.Processed[note] then
             local tIdx = note:get_track_index()
 
-            -- Planificación y calibración de impacto por nota
+            -- REGULADOR DE ACCURACY 99.X%
             local plan = Engine.NotePlan[note]
             if not plan then
                 local currentAcc = Engine.getAccuracy()
-                local canTriggerGreat = (Engine.Stats.Total >= Engine.Config.MinNotesBeforeGreat)
-                    and (currentAcc >= Engine.Config.TargetAccuracy)
-                    and (tick() - Engine.LastGreatTime >= Engine.Config.GreatCooldown)
-                    and (note.ClassName == "SingleNote")
+                local totalNotes = Engine.Stats.Total
+                local now = tick()
 
-                if canTriggerGreat then
+                local mustDropInitial = (totalNotes == Engine.Config.InitialGreatNote)
+                local isAboveCeiling = (totalNotes > Engine.Config.InitialGreatNote)
+                    and (currentAcc >= Engine.Config.MaxAccuracy)
+                    and (now - Engine.LastGreatTime >= Engine.Config.GreatCooldownSec)
+
+                local allowGreat = (note.ClassName == "SingleNote")
+                    and (currentAcc > Engine.Config.MinAccuracy)
+                    and (mustDropInitial or isAboveCeiling)
+
+                if allowGreat then
                     plan = {
                         Type = "Great",
-                        TargetMs = -36, -- Retraso a -36 ms para forzar Late Great limpio
+                        TargetMs = -35, -- Retardo para Late Great sin riesgo de Okay
                     }
-                    Engine.LastGreatTime = tick()
+                    Engine.LastGreatTime = now
                 else
-                    -- Jitter humanizado dentro de la ventana Perfect
-                    local jitter = math.random(Engine.Config.PerfectJitterMin, Engine.Config.PerfectJitterMax)
                     plan = {
                         Type = "Perfect",
-                        TargetMs = jitter,
+                        TargetMs = math.random(Engine.Config.PerfectJitterMin, Engine.Config.PerfectJitterMax),
                     }
                 end
                 Engine.NotePlan[note] = plan
             end
 
+            -- Posición de la nota respecto a la barra receptora
             local timeToEnd = nil
             pcall(function()
                 if note.get_time_to_end then
@@ -195,19 +194,19 @@ function Engine.step(trackSys, audioMgr)
 
                 if canHit then
                     if plan.Type == "Perfect" then
-                        -- Impacta cuando llega al milisegundo humanizado asignado
+                        -- Impacta exactamente en la barra con el jitter asignado
                         if isPerfect(rating) and (timeToEnd == nil or timeToEnd <= plan.TargetMs) then
                             shouldHit = true
-                        -- Salvavidas anti-lag: nunca dejar escapar la nota
-                        elseif timeToEnd ~= nil and timeToEnd <= -26 and (isPerfect(rating) or isGreat(rating)) then
+                        -- Blindaje anti-miss si caen los FPS
+                        elseif timeToEnd ~= nil and timeToEnd <= -25 and (isPerfect(rating) or isGreat(rating)) then
                             shouldHit = true
                         end
                     elseif plan.Type == "Great" then
-                        -- Espera a que cruce ligeramente el receptor para el Great seguro
+                        -- Espera al retardo controlado sobre el receptor
                         if timeToEnd ~= nil and timeToEnd <= plan.TargetMs and (isGreat(rating) or isPerfect(rating)) then
                             shouldHit = true
-                        -- Salvavidas para evitar caer en Okay o Miss
-                        elseif timeToEnd ~= nil and timeToEnd <= -46 then
+                        -- Salvavidas para evitar Okay o Miss
+                        elseif timeToEnd ~= nil and timeToEnd <= -45 then
                             shouldHit = true
                         end
                     end
@@ -242,10 +241,10 @@ function Engine.step(trackSys, audioMgr)
                     local shouldPress = false
 
                     if canHit then
-                        -- Las notas sostenidas se activan en Perfect directo sobre la barra
+                        -- Las notas sostenidas siempre van a Perfect sobre la barra
                         if isPerfect(rating) and (timeToEnd == nil or timeToEnd <= 0) then
                             shouldPress = true
-                        elseif timeToEnd ~= nil and timeToEnd <= -26 and (isPerfect(rating) or isGreat(rating)) then
+                        elseif timeToEnd ~= nil and timeToEnd <= -24 and (isPerfect(rating) or isGreat(rating)) then
                             shouldPress = true
                         end
                     end
@@ -287,9 +286,9 @@ function Window.create(onToggle)
     screenGui.Parent = parent
 
     local frame = Instance.new("Frame")
-    frame.Size = UDim2.new(0, 180, 0, 85)
-    frame.Position = UDim2.new(0.5, -90, 0.15, 0)
-    frame.BackgroundColor3 = Color3.fromRGB(20, 21, 26)
+    frame.Size = UDim2.new(0, 190, 0, 105)
+    frame.Position = UDim2.new(0.5, -95, 0.12, 0)
+    frame.BackgroundColor3 = Color3.fromRGB(18, 19, 23)
     frame.BorderSizePixel = 0
     frame.Active = true
     frame.Draggable = true
@@ -300,28 +299,28 @@ function Window.create(onToggle)
     corner.Parent = frame
 
     local stroke = Instance.new("UIStroke")
-    stroke.Color = Color3.fromRGB(45, 48, 58)
+    stroke.Color = Color3.fromRGB(40, 44, 52)
     stroke.Thickness = 1.2
     stroke.Parent = frame
 
-    local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(1, 0, 0, 22)
-    label.Position = UDim2.new(0, 0, 0, 4)
-    label.BackgroundTransparency = 1
-    label.Font = Enum.Font.GothamBold
-    label.Text = "AUTOPLAY • [F4]"
-    label.TextColor3 = Color3.fromRGB(200, 205, 215)
-    label.TextSize = 11
-    label.Parent = frame
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, 0, 0, 22)
+    title.Position = UDim2.new(0, 0, 0, 4)
+    title.BackgroundTransparency = 1
+    title.Font = Enum.Font.GothamBold
+    title.Text = "AUTOPLAY • 99% FC [F4]"
+    title.TextColor3 = Color3.fromRGB(190, 195, 205)
+    title.TextSize = 10
+    title.Parent = frame
 
     local toggleBtn = Instance.new("TextButton")
-    toggleBtn.Size = UDim2.new(1, -20, 0, 36)
-    toggleBtn.Position = UDim2.new(0, 10, 0, 34)
-    toggleBtn.BackgroundColor3 = Color3.fromRGB(220, 50, 60)
+    toggleBtn.Size = UDim2.new(1, -20, 0, 32)
+    toggleBtn.Position = UDim2.new(0, 10, 0, 28)
+    toggleBtn.BackgroundColor3 = Color3.fromRGB(215, 45, 55)
     toggleBtn.Font = Enum.Font.GothamBold
     toggleBtn.Text = "OFF"
     toggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    toggleBtn.TextSize = 13
+    toggleBtn.TextSize = 12
     toggleBtn.AutoButtonColor = false
     toggleBtn.Parent = frame
 
@@ -329,16 +328,21 @@ function Window.create(onToggle)
     btnCorner.CornerRadius = UDim.new(0, 6)
     btnCorner.Parent = toggleBtn
 
+    local statsLabel = Instance.new("TextLabel")
+    statsLabel.Size = UDim2.new(1, -20, 0, 34)
+    statsLabel.Position = UDim2.new(0, 10, 0, 64)
+    statsLabel.BackgroundTransparency = 1
+    statsLabel.Font = Enum.Font.Code
+    statsLabel.Text = "ACC: 100.00% | P:0 G:0"
+    statsLabel.TextColor3 = Color3.fromRGB(120, 180, 255)
+    statsLabel.TextSize = 10
+    statsLabel.Parent = frame
+
     local isEnabled = false
     toggleBtn.MouseButton1Click:Connect(function()
         isEnabled = not isEnabled
-        if isEnabled then
-            toggleBtn.Text = "ON"
-            toggleBtn.BackgroundColor3 = Color3.fromRGB(40, 180, 75)
-        else
-            toggleBtn.Text = "OFF"
-            toggleBtn.BackgroundColor3 = Color3.fromRGB(220, 50, 60)
-        end
+        toggleBtn.Text = isEnabled and "ON" or "OFF"
+        toggleBtn.BackgroundColor3 = isEnabled and Color3.fromRGB(35, 175, 70) or Color3.fromRGB(215, 45, 55)
         onToggle(isEnabled)
     end)
 
@@ -349,7 +353,10 @@ function Window.create(onToggle)
         end
     end)
 
-    return screenGui
+    return {
+        Gui = screenGui,
+        StatsLabel = statsLabel
+    }
 end
 
 return Window end function __DARKLUA_BUNDLE_MODULES.b():typeof(__modImpl())local v=__DARKLUA_BUNDLE_MODULES.cache.b if not v then v={c=__modImpl()}__DARKLUA_BUNDLE_MODULES.cache.b=v end return v.c end end end
@@ -362,6 +369,7 @@ local Autoplay = {
     TrackSystem = nil,
     AudioManager = nil,
     Connection = nil,
+    UI = nil,
 }
 
 local function stopPlayback()
@@ -370,7 +378,6 @@ local function stopPlayback()
         Autoplay.Connection = nil
     end
     Engine.releaseAll(Autoplay.TrackSystem)
-    table.clear(Engine.Processed)
     Autoplay.TrackSystem = nil
     Autoplay.AudioManager = nil
 end
@@ -389,13 +396,19 @@ local function onRenderStep()
     local finished = Engine.step(Autoplay.TrackSystem, Autoplay.AudioManager)
     if finished then
         stopPlayback()
+        return
+    end
+
+    -- Actualizar panel de Accuracy en tiempo real
+    if Autoplay.UI and Autoplay.UI.StatsLabel then
+        local acc = Engine.getAccuracy()
+        Autoplay.UI.StatsLabel.Text = string.format("ACC: %.2f%% | P:%d G:%d", acc, Engine.Stats.Perfects, Engine.Stats.Greats)
     end
 end
 
--- Supervisor pasivo para enganchar partidas
 task.spawn(function()
     while true do
-        task.wait(0.5)
+        task.wait(0.4)
         if Autoplay.Enabled and not Autoplay.Connection then
             local ts, am = Engine.findGame()
             if ts and am then
@@ -407,7 +420,7 @@ task.spawn(function()
     end
 end)
 
-Window.create(function(enabled)
+Autoplay.UI = Window.create(function(enabled)
     Autoplay.Enabled = enabled
     if not enabled then
         stopPlayback()
