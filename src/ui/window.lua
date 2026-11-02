@@ -16,8 +16,8 @@ function Window.create(onToggle)
     screenGui.Parent = parent
 
     local frame = Instance.new("Frame")
-    frame.Size = UDim2.new(0, 190, 0, 105)
-    frame.Position = UDim2.new(0.5, -95, 0.12, 0)
+    frame.Size = UDim2.new(0, 195, 0, 110)
+    frame.Position = UDim2.new(0.5, -97, 0.12, 0)
     frame.BackgroundColor3 = Color3.fromRGB(18, 19, 23)
     frame.BorderSizePixel = 0
     frame.Active = true
@@ -29,7 +29,7 @@ function Window.create(onToggle)
     corner.Parent = frame
 
     local stroke = Instance.new("UIStroke")
-    stroke.Color = Color3.fromRGB(40, 44, 52)
+    stroke.Color = Color3.fromRGB(42, 46, 56)
     stroke.Thickness = 1.2
     stroke.Parent = frame
 
@@ -38,13 +38,13 @@ function Window.create(onToggle)
     title.Position = UDim2.new(0, 0, 0, 4)
     title.BackgroundTransparency = 1
     title.Font = Enum.Font.GothamBold
-    title.Text = "AUTOPLAY • 99% FC [F4]"
+    title.Text = "AUTOPLAY • 99.#% FC [F4]"
     title.TextColor3 = Color3.fromRGB(190, 195, 205)
     title.TextSize = 10
     title.Parent = frame
 
     local toggleBtn = Instance.new("TextButton")
-    toggleBtn.Size = UDim2.new(1, -20, 0, 32)
+    toggleBtn.Size = UDim2.new(1, -20, 0, 34)
     toggleBtn.Position = UDim2.new(0, 10, 0, 28)
     toggleBtn.BackgroundColor3 = Color3.fromRGB(215, 45, 55)
     toggleBtn.Font = Enum.Font.GothamBold
@@ -59,12 +59,12 @@ function Window.create(onToggle)
     btnCorner.Parent = toggleBtn
 
     local statsLabel = Instance.new("TextLabel")
-    statsLabel.Size = UDim2.new(1, -20, 0, 34)
-    statsLabel.Position = UDim2.new(0, 10, 0, 64)
+    statsLabel.Size = UDim2.new(1, -20, 0, 36)
+    statsLabel.Position = UDim2.new(0, 10, 0, 66)
     statsLabel.BackgroundTransparency = 1
     statsLabel.Font = Enum.Font.Code
     statsLabel.Text = "ACC: 100.00% | P:0 G:0"
-    statsLabel.TextColor3 = Color3.fromRGB(120, 180, 255)
+    statsLabel.TextColor3 = Color3.fromRGB(120, 185, 255)
     statsLabel.TextSize = 10
     statsLabel.Parent = frame
 
