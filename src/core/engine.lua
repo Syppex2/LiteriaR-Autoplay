@@ -1,9 +1,17 @@
 local Engine = {}
 Engine.Holding = {}
 Engine.Processed = setmetatable({}, { __mode = "k" })
+Engine.NotePlan = setmetatable({}, { __mode = "k" })
 
--- Carga segura de los enumeradores del juego
-local NoteResult = { Okay = 1, Great = 2, Perfect = 3, Miss = 4 }
+-- AJUSTE DE PRECISIÓN FC:
+-- 98 = ~98% de precisión con FC asegurado (2% de Greats)
+-- 99 = ~99% de precisión con FC asegurado (1% de Greats)
+Engine.Config = {
+    PerfectChance = 98,
+}
+
+-- Enumerador oficial
+local NoteResult = { Miss = 1, Okay = 2, Great = 3, Perfect = 4 }
 pcall(function()
     NoteResult = require(game.ReplicatedStorage:WaitForChild("LiteriaRGameCore", 1).Enums.NoteResult)
 end)
@@ -13,7 +21,7 @@ if not NoteResult or not NoteResult.Perfect then
     end)
 end
 if not NoteResult or not NoteResult.Perfect then
-    NoteResult = { Okay = 1, Great = 2, Perfect = 3, Miss = 4 }
+    NoteResult = { Miss = 1, Okay = 2, Great = 3, Perfect = 4 }
 end
 
 function Engine.releaseAll(trackSys)
@@ -23,6 +31,7 @@ function Engine.releaseAll(trackSys)
         end
     end
     table.clear(Engine.Holding)
+    table.clear(Engine.NotePlan)
 end
 
 function Engine.isAlive(ts)
@@ -71,7 +80,7 @@ function Engine.step(trackSys, audioMgr)
 
     if isFinished or not isPlaying then return isFinished end
 
-    -- 1. Control de soltado exacto en notas sostenidas activas
+    -- 1. SOLTADO DE NOTAS SOSTENIDAS (Garantía de Combo)
     for tIdx, heldNote in pairs(Engine.Holding) do
         local shouldRelease = false
         pcall(function()
@@ -79,8 +88,7 @@ function Engine.step(trackSys, audioMgr)
                 shouldRelease = true
             else
                 local canRelease, relRating = heldNote:test_release()
-                -- Soltar únicamente cuando la cola esté en ventana Perfect o Great
-                if canRelease and (relRating == NoteResult.Perfect or relRating == 3 or relRating == NoteResult.Great or relRating == 2) then
+                if canRelease and (relRating == NoteResult.Perfect or relRating == 4 or relRating == NoteResult.Great or relRating == 3) then
                     shouldRelease = true
                 end
             end
@@ -92,7 +100,7 @@ function Engine.step(trackSys, audioMgr)
         end
     end
 
-    -- 2. Procesamiento de notas en pista
+    -- 2. PROCESAMIENTO DE NOTAS
     local notesList
     pcall(function() notesList = trackSys:get_notes() end)
     if not notesList then return false end
@@ -108,18 +116,47 @@ function Engine.step(trackSys, audioMgr)
         if note and not note:should_remove() and not Engine.Processed[note] then
             local tIdx = note:get_track_index()
 
+            -- Asignación de veredicto por nota (98% Perfect / 2% Great)
+            local target = Engine.NotePlan[note]
+            if not target then
+                target = (math.random(1, 100) <= Engine.Config.PerfectChance) and "Perfect" or "Great"
+                Engine.NotePlan[note] = target
+            end
+
+            -- ====================================================
             -- NOTA SIMPLE (SingleNote)
+            -- ====================================================
             if note.ClassName == "SingleNote" then
                 local canHit, rating = note:test_hit()
+                local timeToEnd = 999
+                pcall(function() timeToEnd = note:get_time_to_end() end)
 
-                -- Se impacta en cuanto el motor nativo confirme Perfect (o Great si hubo un pico de lag)
-                if canHit and (rating == NoteResult.Perfect or rating == 3 or rating == NoteResult.Great or rating == 2) then
+                local shouldHit = false
+
+                if target == "Perfect" then
+                    -- Impacto directo en ventana Perfect
+                    if canHit and (rating == NoteResult.Perfect or rating == 4) then
+                        shouldHit = true
+                    -- Salvavidas de combo: si hubo lag, golpear antes de que salga de la barra
+                    elseif canHit and timeToEnd <= -28 then
+                        shouldHit = true
+                    end
+                elseif target == "Great" then
+                    -- Impacto retrasado voluntario (~34 ms tarde) para forzar un Great limpio
+                    if canHit and timeToEnd <= -34 and (rating == NoteResult.Great or rating == 3) then
+                        shouldHit = true
+                    -- Salvavidas: no permitir que caiga en Okay o Miss
+                    elseif canHit and timeToEnd <= -48 then
+                        shouldHit = true
+                    end
+                end
+
+                if shouldHit then
                     Engine.Processed[note] = true
-                    
-                    -- Asegurar que el receptor no esté bloqueado antes de registrar el impacto
+
                     pcall(function() trackSys:release_track_index(tIdx) end)
                     trackSys:press_track_index(tIdx)
-                    
+
                     task.defer(function()
                         if not Engine.Holding[tIdx] then
                             pcall(function() trackSys:release_track_index(tIdx) end)
@@ -127,14 +164,29 @@ function Engine.step(trackSys, audioMgr)
                     end)
                 end
 
+            -- ====================================================
             -- NOTA SOSTENIDA (HeldNote)
+            -- ====================================================
             elseif note.ClassName == "HeldNote" then
                 if not Engine.Holding[tIdx] then
                     local canHit, rating = note:test_hit()
-                    if canHit and (rating == NoteResult.Perfect or rating == 3 or rating == NoteResult.Great or rating == 2) then
+                    local shouldPress = false
+
+                    if target == "Perfect" then
+                        if canHit and (rating == NoteResult.Perfect or rating == 4) then
+                            shouldPress = true
+                        end
+                    elseif target == "Great" then
+                        -- En notas largas se toma el Great temprano de entrada o Perfect si no hay margen
+                        if canHit and (rating == NoteResult.Great or rating == 3 or rating == NoteResult.Perfect or rating == 4) then
+                            shouldPress = true
+                        end
+                    end
+
+                    if shouldPress then
                         Engine.Processed[note] = true
                         Engine.Holding[tIdx] = note
-                        
+
                         pcall(function() trackSys:release_track_index(tIdx) end)
                         trackSys:press_track_index(tIdx)
                     end
