@@ -3,13 +3,33 @@ Engine.Holding = {}
 Engine.Processed = setmetatable({}, { __mode = "k" })
 Engine.NotePlan = setmetatable({}, { __mode = "k" })
 
--- Calibración de Full Combo:
--- 99 = 99% Perfect, 1% Late Great (FC garantizado)
--- 98 = 98% Perfect, 2% Late Great (FC garantizado)
+-- ====================================================================
+-- CONFIGURACIÓN DE ACCURACY Y HUMANIZACIÓN
+-- ====================================================================
 Engine.Config = {
-    PerfectChance = 99,
+    -- Umbral de precisión: si el accuracy supera este número, se fuerza un Great
+    -- (Ej: 99.5, 99.7 o 99.9 según tu preferencia)
+    TargetAccuracy = 99.6,
+
+    -- Cantidad de notas iniciales en Perfect antes de permitir el primer Great
+    MinNotesBeforeGreat = 30,
+
+    -- Enfriamiento en segundos entre Greats (evita dos Greats seguidos en ráfagas)
+    GreatCooldown = 4.0,
+
+    -- Variación humanizada de milisegundos para notas PERFECT (Jitter natural)
+    PerfectJitterMin = -12, -- ms tarde
+    PerfectJitterMax = 8,   -- ms temprano
 }
 
+Engine.Stats = {
+    Perfects = 0,
+    Greats = 0,
+    Total = 0,
+}
+Engine.LastGreatTime = 0
+
+-- Enumeradores nativos de RoBeats / LiteriaR
 local NoteResult = { Okay = 1, Great = 2, Perfect = 3, Miss = 4 }
 pcall(function()
     local core = game.ReplicatedStorage:FindFirstChild("LiteriaRGameCore") or game.ReplicatedStorage:FindFirstChild("RobeatsGameCore")
@@ -29,6 +49,12 @@ local function isGreat(rating)
     return rating == NoteResult.Great or rating == 2
 end
 
+function Engine.getAccuracy()
+    if Engine.Stats.Total == 0 then return 100 end
+    local score = (Engine.Stats.Perfects * 1.0) + (Engine.Stats.Greats * 0.75)
+    return (score / Engine.Stats.Total) * 100
+end
+
 function Engine.releaseAll(trackSys)
     if trackSys then
         for tIdx = 1, 4 do
@@ -37,6 +63,10 @@ function Engine.releaseAll(trackSys)
     end
     table.clear(Engine.Holding)
     table.clear(Engine.NotePlan)
+    Engine.Stats.Perfects = 0
+    Engine.Stats.Greats = 0
+    Engine.Stats.Total = 0
+    Engine.LastGreatTime = 0
 end
 
 function Engine.isAlive(ts)
@@ -85,7 +115,7 @@ function Engine.step(trackSys, audioMgr)
 
     if isFinished or not isPlaying then return isFinished end
 
-    -- 1. SOLTADO DE NOTAS SOSTENIDAS (En el receptor)
+    -- 1. SOLTADO DE NOTAS SOSTENIDAS (Siempre en Perfect para asegurar combo)
     for tIdx, heldNote in pairs(Engine.Holding) do
         local shouldRelease = false
         pcall(function()
@@ -121,13 +151,32 @@ function Engine.step(trackSys, audioMgr)
         if note and not note:should_remove() and not Engine.Processed[note] then
             local tIdx = note:get_track_index()
 
-            local target = Engine.NotePlan[note]
-            if not target then
-                target = (math.random(1, 100) <= Engine.Config.PerfectChance) and "Perfect" or "Great"
-                Engine.NotePlan[note] = target
+            -- Planificación y calibración de impacto por nota
+            local plan = Engine.NotePlan[note]
+            if not plan then
+                local currentAcc = Engine.getAccuracy()
+                local canTriggerGreat = (Engine.Stats.Total >= Engine.Config.MinNotesBeforeGreat)
+                    and (currentAcc >= Engine.Config.TargetAccuracy)
+                    and (tick() - Engine.LastGreatTime >= Engine.Config.GreatCooldown)
+                    and (note.ClassName == "SingleNote")
+
+                if canTriggerGreat then
+                    plan = {
+                        Type = "Great",
+                        TargetMs = -36, -- Retraso a -36 ms para forzar Late Great limpio
+                    }
+                    Engine.LastGreatTime = tick()
+                else
+                    -- Jitter humanizado dentro de la ventana Perfect
+                    local jitter = math.random(Engine.Config.PerfectJitterMin, Engine.Config.PerfectJitterMax)
+                    plan = {
+                        Type = "Perfect",
+                        TargetMs = jitter,
+                    }
+                end
+                Engine.NotePlan[note] = plan
             end
 
-            -- Obtener la distancia exacta en milisegundos a la barra
             local timeToEnd = nil
             pcall(function()
                 if note.get_time_to_end then
@@ -145,17 +194,20 @@ function Engine.step(trackSys, audioMgr)
                 local shouldHit = false
 
                 if canHit then
-                    if target == "Perfect" then
-                        -- Solo presiona cuando la nota toca físicamente la barra (timeToEnd <= 0)
-                        if isPerfect(rating) and (timeToEnd == nil or timeToEnd <= 0) then
+                    if plan.Type == "Perfect" then
+                        -- Impacta cuando llega al milisegundo humanizado asignado
+                        if isPerfect(rating) and (timeToEnd == nil or timeToEnd <= plan.TargetMs) then
                             shouldHit = true
-                        -- Salvavidas de FC ante caídas de FPS
+                        -- Salvavidas anti-lag: nunca dejar escapar la nota
                         elseif timeToEnd ~= nil and timeToEnd <= -26 and (isPerfect(rating) or isGreat(rating)) then
                             shouldHit = true
                         end
-                    elseif target == "Great" then
-                        -- Late Great: se deja pasar ligeramente la barra (-35 ms) para no registrarlo arriba
-                        if timeToEnd ~= nil and timeToEnd <= -35 and (isGreat(rating) or isPerfect(rating)) then
+                    elseif plan.Type == "Great" then
+                        -- Espera a que cruce ligeramente el receptor para el Great seguro
+                        if timeToEnd ~= nil and timeToEnd <= plan.TargetMs and (isGreat(rating) or isPerfect(rating)) then
+                            shouldHit = true
+                        -- Salvavidas para evitar caer en Okay o Miss
+                        elseif timeToEnd ~= nil and timeToEnd <= -46 then
                             shouldHit = true
                         end
                     end
@@ -163,6 +215,13 @@ function Engine.step(trackSys, audioMgr)
 
                 if shouldHit then
                     Engine.Processed[note] = true
+
+                    if plan.Type == "Perfect" then
+                        Engine.Stats.Perfects = Engine.Stats.Perfects + 1
+                    else
+                        Engine.Stats.Greats = Engine.Stats.Greats + 1
+                    end
+                    Engine.Stats.Total = Engine.Stats.Total + 1
 
                     pcall(function() trackSys:release_track_index(tIdx) end)
                     trackSys:press_track_index(tIdx)
@@ -183,22 +242,20 @@ function Engine.step(trackSys, audioMgr)
                     local shouldPress = false
 
                     if canHit then
-                        if target == "Perfect" then
-                            if isPerfect(rating) and (timeToEnd == nil or timeToEnd <= 0) then
-                                shouldPress = true
-                            elseif timeToEnd ~= nil and timeToEnd <= -26 and (isPerfect(rating) or isGreat(rating)) then
-                                shouldPress = true
-                            end
-                        elseif target == "Great" then
-                            if timeToEnd ~= nil and timeToEnd <= -35 and (isGreat(rating) or isPerfect(rating)) then
-                                shouldPress = true
-                            end
+                        -- Las notas sostenidas se activan en Perfect directo sobre la barra
+                        if isPerfect(rating) and (timeToEnd == nil or timeToEnd <= 0) then
+                            shouldPress = true
+                        elseif timeToEnd ~= nil and timeToEnd <= -26 and (isPerfect(rating) or isGreat(rating)) then
+                            shouldPress = true
                         end
                     end
 
                     if shouldPress then
                         Engine.Processed[note] = true
                         Engine.Holding[tIdx] = note
+
+                        Engine.Stats.Perfects = Engine.Stats.Perfects + 1
+                        Engine.Stats.Total = Engine.Stats.Total + 1
 
                         pcall(function() trackSys:release_track_index(tIdx) end)
                         trackSys:press_track_index(tIdx)
